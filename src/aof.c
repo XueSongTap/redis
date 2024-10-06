@@ -30,6 +30,48 @@ aofManifest *aofLoadManifestFromFile(sds am_filepath);
 void aofManifestFreeAndUpdate(aofManifest *am);
 void aof_background_fsync_and_close(int fd);
 
+
+/*
+    aof 依次执行函数：
+    aofRewriteBufferAppend()：将命令追加到重写缓冲区
+    aofRewriteBufferFlush()：将重写缓冲区的内容写入AOF文件
+    aofRewriteBufferFree()：释放重写缓冲区
+*/
+
+
+/*
+AOF (Append Only File) 是 Redis 的一种持久化机制,用于记录所有修改数据库的写操作命令。AOF 文件的内容主要包含以下几个部分:
+
+1. 文件头:
+   通常包含一个 Redis 版本标识,如 "REDIS0009"。
+
+2. SELECT 命令:
+   用于选择数据库,如 "*2\r\n$6\r\nSELECT\r\n$1\r\n0\r\n"。
+
+3. 写操作命令:
+   记录所有修改数据的命令,以 Redis 协议格式存储,例如:
+
+   ```
+   *3\r\n$3\r\nSET\r\n$3\r\nkey\r\n$5\r\nvalue\r\n
+   *4\r\n$4\r\nSADD\r\n$3\r\nset\r\n$5\r\nmember1\r\n$5\r\nmember2\r\n  
+   ```
+
+4. 时间戳注释(可选):
+   如果启用了 AOF 时间戳功能,会插入时间戳注释,如:
+   "#TS:1609459200\r\n"
+
+5. MULTI/EXEC 事务:
+   如果有事务操作,会记录 MULTI 和 EXEC 命令。
+
+6. 文件结尾:
+   通常没有特殊标记,直接结束。
+
+AOF 文件是纯文本格式,可以直接用文本编辑器查看。每个命令都按照 Redis 协议格式存储,以 "*" 开头表示参数数量,然后是每个参数的长度和内容。
+
+通过定期重写,AOF 文件会被压缩,只保留能重建当前数据集的最小命令集。
+
+总之,AOF 文件本质上是 Redis 命令的日志记录,按时间顺序追加所有写操作命令,用于在 Redis 重启时重放来恢复数据。
+*/
 /* ----------------------------------------------------------------------------
  * AOF Manifest file implementation.
  *
@@ -75,11 +117,13 @@ void aof_background_fsync_and_close(int fd);
 #define AOF_MANIFEST_KEY_FILE_TYPE   "type"
 
 /* Create an empty aofInfo. */
+//创建一个空的aofInfo结构体
 aofInfo *aofInfoCreate(void) {
     return zcalloc(sizeof(aofInfo));
 }
 
 /* Free the aofInfo structure (pointed to by ai) and its embedded file_name. */
+//释放aofInfo结构体(指向ai)及其嵌入的file_name
 void aofInfoFree(aofInfo *ai) {
     serverAssert(ai != NULL);
     if (ai->file_name) sdsfree(ai->file_name);
@@ -87,6 +131,7 @@ void aofInfoFree(aofInfo *ai) {
 }
 
 /* Deep copy an aofInfo. */
+//深拷贝aofInfo
 aofInfo *aofInfoDup(aofInfo *orig) {
     serverAssert(orig != NULL);
     aofInfo *ai = aofInfoCreate();
@@ -99,6 +144,7 @@ aofInfo *aofInfoDup(aofInfo *orig) {
 /* Format aofInfo as a string and it will be a line in the manifest.
  *
  * When update this format, make sure to update redis-check-aof as well. */
+//将aofInfo格式化为字符串,并将其作为清单中的一行
 sds aofInfoFormat(sds buf, aofInfo *ai) {
     sds filename_repr = NULL;
 
@@ -210,15 +256,18 @@ sds getAofManifestAsString(aofManifest *am) {
  * in order to support seamless upgrades from previous versions which did not
  * use them.
  */
+//在服务器启动时加载AOF清单文件。
 void aofLoadManifestFromDisk(void) {
     server.aof_manifest = aofManifestCreate();
     if (!dirExists(server.aof_dirname)) {
         serverLog(LL_DEBUG, "The AOF directory %s doesn't exist", server.aof_dirname);
         return;
     }
-
+    //获取AOF清单文件名
     sds am_name = getAofManifestFileName();
+    //创建AOF清单文件路径
     sds am_filepath = makePath(server.aof_dirname, am_name);
+    //如果AOF清单文件不存在,则记录日志并返回
     if (!fileExist(am_filepath)) {
         serverLog(LL_DEBUG, "The AOF manifest file %s doesn't exist", am_name);
         sdsfree(am_name);
@@ -233,6 +282,8 @@ void aofLoadManifestFromDisk(void) {
 }
 
 /* Generic manifest loading function, used in `aofLoadManifestFromDisk` and redis-check-aof tool. */
+//在aofLoadManifestFromDisk和redis-check-aof工具中使用
+//作用是加载AOF清单文件,并将其内容解析为aofManifest结构体
 #define MANIFEST_MAX_LINE 1024
 aofManifest *aofLoadManifestFromFile(sds am_filepath) {
     const char *err = NULL;
@@ -314,6 +365,7 @@ aofManifest *aofLoadManifestFromFile(sds am_filepath) {
             goto loaderr;
         }
 
+        //释放分割后的参数
         sdsfreesplitres(argv, argc);
         argv = NULL;
 
@@ -390,6 +442,7 @@ aofManifest *aofManifestDup(aofManifest *orig) {
 
 /* Change the `server.aof_manifest` pointer to 'am' and free the previous
  * one if we have. */
+//将server.aof_manifest指针更新为am,并释放之前的aofManifest
 void aofManifestFreeAndUpdate(aofManifest *am) {
     serverAssert(am != NULL);
     if (server.aof_manifest) aofManifestFree(server.aof_manifest);
@@ -445,12 +498,15 @@ sds getNewIncrAofName(aofManifest *am) {
 }
 
 /* Get temp INCR type AOF name. */
+//获取临时INCR AOF文件名
+// INCR 指增量文件，INCR全称Incremental
 sds getTempIncrAofName(void) {
     return sdscatprintf(sdsempty(), "%s%s%s", TEMP_FILE_NAME_PREFIX, server.aof_filename,
         INCR_FILE_SUFFIX);
 }
 
 /* Get the last INCR AOF name or create a new one. */
+//获取最后一个INCR AOF文件名或创建一个新的INCR AOF文件名
 sds getLastIncrAofName(aofManifest *am) {
     serverAssert(am != NULL);
 
@@ -470,6 +526,10 @@ sds getLastIncrAofName(aofManifest *am) {
  * AOF_FILE_TYPE_INCR to AOF_FILE_TYPE_HIST, and move them to the
  * 'history_aof_list'.
  */
+/*
+    在AOFRW成功后，此函数将'incr_aof_list'中的AOF文件类型从
+    AOF_FILE_TYPE_INCR改为AOF_FILE_TYPE_HIST，并将它们移动到'history_aof_list'。   
+*/
 void markRewrittenIncrAofAsHistory(aofManifest *am) {
     serverAssert(am != NULL);
     if (!listLength(am->incr_aof_list)) {
@@ -503,6 +563,7 @@ void markRewrittenIncrAofAsHistory(aofManifest *am) {
 }
 
 /* Write the formatted manifest string to disk. */
+//将格式化的清单字符串写入磁盘
 int writeAofManifestFile(sds buf) {
     int ret = C_OK;
     ssize_t nwritten;
@@ -566,6 +627,7 @@ int writeAofManifestFile(sds buf) {
         goto cleanup;
     }
 
+    //关闭文件描述符
 cleanup:
     if (fd != -1) close(fd);
     sdsfree(am_name);
@@ -576,6 +638,7 @@ cleanup:
 }
 
 /* Persist the aofManifest information pointed to by am to disk. */
+//将aofManifest信息持久化到磁盘
 int persistAofManifest(aofManifest *am) {
     if (am->dirty == 0) {
         return C_OK;
@@ -598,6 +661,9 @@ int persistAofManifest(aofManifest *am) {
  * If any of the above steps fails or crash occurs, this will not cause any
  * problems, and redis will retry the upgrade process when it restarts.
  */
+/*
+    在redis升级时，此函数准备AOF目录，创建BASE类型AOF文件，并将旧的AOF文件移动到AOF目录
+*/
 void aofUpgradePrepare(aofManifest *am) {
     serverAssert(!aofFileExist(server.aof_filename));
 
@@ -609,13 +675,22 @@ void aofUpgradePrepare(aofManifest *am) {
     }
 
     /* Manually construct a BASE type aofInfo and add it to aofManifest. */
+    // 手动构造一个BASE类型aofInfo，并将其添加到aofManifest
+    // 如果am->base_aof_info不为空，则释放它
     if (am->base_aof_info) aofInfoFree(am->base_aof_info);
+    // 创建一个新的aofInfo
     aofInfo *ai = aofInfoCreate();
+    // 设置aofInfo的文件名
     ai->file_name = sdsnew(server.aof_filename);
+    // 设置aofInfo的文件序列号
     ai->file_seq = 1;
+    // 设置aofInfo的文件类型
     ai->file_type = AOF_FILE_TYPE_BASE;
+    // 将aofInfo添加到aofManifest
     am->base_aof_info = ai;
+    // 设置当前的BASE文件序列号
     am->curr_base_file_seq = 1;
+    // 设置dirty标志
     am->dirty = 1;
 
     /* Persist the manifest file to AOF directory. */
@@ -624,6 +699,7 @@ void aofUpgradePrepare(aofManifest *am) {
     }
 
     /* Move the old AOF file to AOF directory. */
+    // 将旧的AOF文件移动到AOF目录
     sds aof_filepath = makePath(server.aof_dirname, server.aof_filename);
     if (rename(server.aof_filename, aof_filepath) == -1) {
         serverLog(LL_WARNING,
@@ -646,6 +722,10 @@ void aofUpgradePrepare(aofManifest *am) {
  * The function will traverse the 'history_aof_list' and submit
  * the delete task to the bio thread.
  */
+/*
+    当AOFRW成功时，之前的BASE和INCR AOF文件将变为HISTORY类型，并移动到'history_aof_list'。
+    该函数将遍历'history_aof_list'，并将删除任务提交给bio线程。
+*/
 int aofDelHistoryFiles(void) {
     if (server.aof_manifest == NULL ||
         server.aof_disable_auto_gc == 1 ||
@@ -673,6 +753,9 @@ int aofDelHistoryFiles(void) {
 }
 
 /* Used to clean up temp INCR AOF when AOFRW fails. */
+/*
+    当AOFRW失败时，此函数用于清理临时INCR AOF。
+*/
 void aofDelTempIncrAofFile(void) {
     sds aof_filename = getTempIncrAofName();
     sds aof_filepath = makePath(server.aof_dirname, aof_filename);
@@ -691,6 +774,13 @@ void aofDelTempIncrAofFile(void) {
  *
  * If any of the above steps fails, the redis process will exit.
  */
+/*
+    在redis启动时，如果server.aof_state是'AOF_ON'，则执行以下三个步骤：
+    1. 当redis启动时，如果数据集为空，则强制创建一个BASE文件
+    2. 打开最后一个打开的INCR类型AOF文件，如果没有，则创建一个新的INCR类型AOF文件
+    3. 同步更新清单文件到磁盘
+    如果上述任何一步失败，redis进程将退出。
+*/
 void aofOpenIfNeededOnServerStart(void) {
     if (server.aof_state != AOF_ON) {
         return;
@@ -706,6 +796,7 @@ void aofOpenIfNeededOnServerStart(void) {
     }
 
     /* If we start with an empty dataset, we will force create a BASE file. */
+    // 如果redis启动时数据集为空，则强制创建一个BASE文件
     size_t incr_aof_len = listLength(server.aof_manifest->incr_aof_list);
     if (!server.aof_manifest->base_aof_info && !incr_aof_len) {
         sds base_name = getNewBaseFileNameAndMarkPreAsHistory(server.aof_manifest);
@@ -720,9 +811,11 @@ void aofOpenIfNeededOnServerStart(void) {
 
     /* Because we will 'exit(1)' if open AOF or persistent manifest fails, so
      * we don't need atomic modification here. */
+    // 因为如果打开AOF或持久化清单失败，我们将'exit(1)'，所以这里不需要原子修改
     sds aof_name = getLastIncrAofName(server.aof_manifest);
 
     /* Here we should use 'O_APPEND' flag. */
+    // 这里我们应该使用'O_APPEND'标志， 来确保新数据追加到文件末尾
     sds aof_filepath = makePath(server.aof_dirname, aof_name);
     server.aof_fd = open(aof_filepath, O_WRONLY|O_APPEND|O_CREAT, 0644);
     sdsfree(aof_filepath);
@@ -733,12 +826,15 @@ void aofOpenIfNeededOnServerStart(void) {
     }
 
     /* Persist our changes. */
+    
     int ret = persistAofManifest(server.aof_manifest);
     if (ret != C_OK) {
         exit(1);
     }
 
+    // 获取INCR AOF文件的大小
     server.aof_last_incr_size = getAppendOnlyFileSize(aof_name, NULL);
+    // 设置INCR AOF文件的fsync偏移量
     server.aof_last_incr_fsync_offset = server.aof_last_incr_size;
 
     if (incr_aof_len) {
@@ -768,6 +864,12 @@ int aofFileExist(char *filename) {
  * file to accumulate data during AOF_WAIT_REWRITE, and it will eventually be 
  * renamed in the `backgroundRewriteDoneHandler` and written to the manifest file.
  * */
+/*
+    在AOFRW时，此函数打开一个新的INCR类型AOF文件，并同步更新清单文件到磁盘
+    如果server.aof_state是'AOF_WAIT_REWRITE'，则打开一个临时INCR AOF文件，
+    在AOF_WAIT_REWRITE期间积累数据，最终在backgroundRewriteDoneHandler中重命名，
+    并写入清单文件。    
+*/
 int openNewIncrAofForAppend(void) {
     serverAssert(server.aof_manifest != NULL);
     int newfd = -1;
@@ -775,14 +877,17 @@ int openNewIncrAofForAppend(void) {
     sds new_aof_name = NULL;
 
     /* Only open new INCR AOF when AOF enabled. */
+    // 只有在AOF启用时，才打开新的INCR AOF
     if (server.aof_state == AOF_OFF) return C_OK;
 
     /* Open new AOF. */
     if (server.aof_state == AOF_WAIT_REWRITE) {
         /* Use a temporary INCR AOF file to accumulate data during AOF_WAIT_REWRITE. */
+        // 使用临时INCR AOF文件在AOF_WAIT_REWRITE期间积累数据
         new_aof_name = getTempIncrAofName();
     } else {
         /* Dup a temp aof_manifest to modify. */
+        // 复制一个临时aof_manifest以进行修改
         temp_am = aofManifestDup(server.aof_manifest);
         new_aof_name = sdsdup(getNewIncrAofName(temp_am));
     }
@@ -797,6 +902,7 @@ int openNewIncrAofForAppend(void) {
 
     if (temp_am) {
         /* Persist AOF Manifest. */
+        // 持久化AOF清单
         if (persistAofManifest(temp_am) == C_ERR) {
             goto cleanup;
         }
@@ -808,7 +914,7 @@ int openNewIncrAofForAppend(void) {
 
     /* If reaches here, we can safely modify the `server.aof_manifest`
      * and `server.aof_fd`. */
-
+    // 如果server.aof_fd不为-1，则关闭旧的AOF文件
     /* fsync and close old aof_fd if needed. In fsync everysec it's ok to delay
      * the fsync as long as we grantee it happens, and in fsync always the file
      * is already synced at this point so fsync doesn't matter. */
@@ -819,10 +925,13 @@ int openNewIncrAofForAppend(void) {
     server.aof_fd = newfd;
 
     /* Reset the aof_last_incr_size. */
+    // 重置INCR AOF文件的大小
     server.aof_last_incr_size = 0;
     /* Reset the aof_last_incr_fsync_offset. */
+    // 重置INCR AOF文件的fsync偏移量
     server.aof_last_incr_fsync_offset = 0;
     /* Update `server.aof_manifest`. */
+    // 更新server.aof_manifest
     if (temp_am) aofManifestFreeAndUpdate(temp_am);
     return C_OK;
 
@@ -853,6 +962,14 @@ cleanup:
  * AOFRW, which may be that we have reached the 'next_rewrite_time' or the number of INCR
  * AOFs has not reached the limit threshold.
  * */
+/*
+    当AOFRW失败时，我们通过时间延迟来限制下一次AOFRW的执行。
+    当AOFRW失败时，我们延迟下一次AOFRW的执行时间，如果下一次AOFRW也失败，则延迟时间翻倍，
+    最大延迟时间为60分钟（1小时）。
+    在限制期间，我们仍然可以使用'bgrewriteaof'命令立即执行AOFRW。
+    返回1表示AOFRW受限，无法执行。0表示我们可以执行AOFRW，可能是达到了'next_rewrite_time'，
+    或者INCR AOF的数量未达到限制阈值。
+*/
 #define AOF_REWRITE_LIMITE_THRESHOLD    3
 #define AOF_REWRITE_LIMITE_MAX_MINUTES  60 /* 1 hour */
 int aofRewriteLimited(void) {
@@ -893,6 +1010,10 @@ int aofRewriteLimited(void) {
 
 /* Return true if an AOf fsync is currently already in progress in a
  * BIO thread. */
+/*
+    返回1表示AOF fsync当前正在BIO线程中进行。
+    BIO thread: BIO线程是redis中用于执行后台任务的线程，如AOF fsync、关闭文件描述符等。
+*/
 int aofFsyncInProgress(void) {
     /* Note that we don't care about aof_background_fsync_and_close because
      * server.aof_fd has been replaced by the new INCR AOF file fd,
@@ -902,16 +1023,25 @@ int aofFsyncInProgress(void) {
 
 /* Starts a background task that performs fsync() against the specified
  * file descriptor (the one of the AOF file) in another thread. */
+/*
+    在另一个线程中，使用指定的文件描述符（AOF文件的文件描述符）执行fsync()。
+*/
 void aof_background_fsync(int fd) {
     bioCreateFsyncJob(fd, server.master_repl_offset, 1);
 }
 
 /* Close the fd on the basis of aof_background_fsync. */
+/*
+    在另一个线程中，使用指定的文件描述符（AOF文件的文件描述符）执行fsync()。
+*/
 void aof_background_fsync_and_close(int fd) {
     bioCreateCloseAofJob(fd, server.master_repl_offset, 1);
 }
 
 /* Kills an AOFRW child process if exists */
+/*
+    杀死AOFRW子进程，如果存在
+*/
 void killAppendOnlyChild(void) {
     int statloc;
     /* No AOFRW child? return. */
@@ -929,6 +1059,9 @@ void killAppendOnlyChild(void) {
 
 /* Called when the user switches from "appendonly yes" to "appendonly no"
  * at runtime using the CONFIG command. */
+/*
+    当用户使用CONFIG命令从"appendonly yes"切换到"appendonly no"时，调用此函数。
+*/
 void stopAppendOnly(void) {
     serverAssert(server.aof_state != AOF_OFF);
     flushAppendOnlyFile(1);
@@ -954,6 +1087,12 @@ void stopAppendOnly(void) {
 
 /* Called when the user switches from "appendonly no" to "appendonly yes"
  * at runtime using the CONFIG command. */
+/*
+    当用户使用CONFIG命令从"appendonly no"切换到"appendonly yes"时，调用此函数。
+    config 命令区别是：
+    1. 使用CONFIG命令时，redis会立即执行AOF重写，而不会等待AOF_WAIT_REWRITE状态。
+    2. 使用CONFIG命令时，redis会立即执行AOF重写，而不会等待AOF_WAIT_REWRITE状态。
+*/
 int startAppendOnly(void) {
     serverAssert(server.aof_state == AOF_OFF);
 
@@ -968,6 +1107,7 @@ int startAppendOnly(void) {
         /* If there is a pending AOF rewrite, we need to switch it off and
          * start a new one: the old one cannot be reused because it is not
          * accumulating the AOF buffer. */
+        // 如果存在挂起的AOF重写，我们需要关闭它并开始一个新的重写：旧的不能被重用，因为它不能累积AOF缓冲区
         if (server.child_type == CHILD_TYPE_AOF) {
             serverLog(LL_NOTICE,"AOF was enabled but there is already an AOF rewriting in background. Stopping background AOF and starting a rewrite now.");
             killAppendOnlyChild();
@@ -981,6 +1121,7 @@ int startAppendOnly(void) {
     }
     server.aof_last_fsync = server.mstime;
     /* If AOF fsync error in bio job, we just ignore it and log the event. */
+    // 如果AOF fsync错误在bio job中，我们忽略它并记录事件。
     int aof_bio_fsync_status;
     atomicGet(server.aof_bio_fsync_status, aof_bio_fsync_status);
     if (aof_bio_fsync_status == C_ERR) {
@@ -990,6 +1131,7 @@ int startAppendOnly(void) {
     }
 
     /* If AOF was in error state, we just ignore it and log the event. */
+    // 如果AOF在错误状态，我们忽略它并记录事件。
     if (server.aof_last_write_status == C_ERR) {
         serverLog(LL_WARNING,"AOF reopen, just ignore the last error.");
         server.aof_last_write_status = C_OK;
@@ -1027,6 +1169,13 @@ void applyAppendOnlyConfig(void) {
  * is likely to fail. However apparently in modern systems this is no longer
  * true, and in general it looks just more resilient to retry the write. If
  * there is an actual error condition we'll get it at the next try. */
+/*
+    这是一个包装函数，用于重试短写操作或中断的写操作。
+    尽管我们通常认为写操作是原子的，但在现代系统中，这可能不再适用。
+    因此，我们尝试重试写操作，以确保数据安全。
+
+    主要是把write函数包装了一层，增加了重试机制。
+*/
 ssize_t aofWrite(int fd, const char *buf, size_t len) {
     ssize_t nwritten = 0, totwritten = 0;
 
@@ -1045,7 +1194,7 @@ ssize_t aofWrite(int fd, const char *buf, size_t len) {
 
     return totwritten;
 }
-
+//将AOF缓冲区内容写入磁盘,包括写入延迟、错误处理等
 /* Write the append only file buffer on disk.
  *
  * Since we are required to write the AOF before replying to the client,
@@ -1076,6 +1225,13 @@ void flushAppendOnlyFile(int force) {
          * called only when aof buffer is not empty, so if users
          * stop write commands before fsync called in one second,
          * the data in page cache cannot be flushed in time. */
+        /*
+            如果server.aof_fsync == AOF_FSYNC_EVERYSEC，
+            并且server.aof_last_incr_fsync_offset != server.aof_last_incr_size，
+            并且server.mstime - server.aof_last_fsync >= 1000，
+            并且!(sync_in_progress = aofFsyncInProgress())，
+            则跳转到try_fsync。
+        */
         if (server.aof_fsync == AOF_FSYNC_EVERYSEC &&
             server.aof_last_incr_fsync_offset != server.aof_last_incr_size &&
             server.mstime - server.aof_last_fsync >= 1000 &&
@@ -1109,6 +1265,14 @@ void flushAppendOnlyFile(int force) {
         /* With this append fsync policy we do background fsyncing.
          * If the fsync is still in progress we can try to delay
          * the write for a couple of seconds. */
+        /*
+            如果sync_in_progress为1，则表示AOF fsync当前正在BIO线程中进行。
+            如果server.aof_flush_postponed_start为0，则表示上一次写操作被推迟，
+            则记录当前时间，并返回。
+            如果server.mstime - server.aof_flush_postponed_start < 2000，
+            则表示上一次写操作被推迟的时间小于2秒，则返回。
+            否则，表示上一次写操作被推迟的时间大于2秒，则记录当前时间，并返回。
+        */
         if (sync_in_progress) {
             if (server.aof_flush_postponed_start == 0) {
                 /* No previous write postponing, remember that we are
@@ -1144,6 +1308,23 @@ void flushAppendOnlyFile(int force) {
      * active, and when the above two conditions are missing.
      * We also use an additional event name to save all samples which is
      * useful for graphing / monitoring purposes. */
+    /*
+        如果sync_in_progress为1，则表示AOF fsync当前正在BIO线程中进行。
+        如果hasActiveChildProcess()为1，则表示有活动子进程。
+        否则，表示没有活动子进程。
+    
+        redis是单线程的，所以没有活动子进程时，表示没有活动子进程。
+        所以，当sync_in_progress为1时，表示有活动子进程。
+
+        redis 单线程 指的是只有一个bio线程，但是redis有多个子进程，
+        所以，当sync_in_progress为1时，表示有活动子进程。
+
+        单线程为什么要定义bio线程呢，
+        因为redis是单线程的，所以需要定义bio线程来执行后台任务。
+        为什么不执行单进程，代替bio 单线程？
+
+
+    */
     if (sync_in_progress) {
         latencyAddSampleIfNeeded("aof-write-pending-fsync",latency);
     } else if (hasActiveChildProcess()) {
@@ -1154,6 +1335,11 @@ void flushAppendOnlyFile(int force) {
     latencyAddSampleIfNeeded("aof-write",latency);
 
     /* We performed the write so reset the postponed flush sentinel to zero. */
+    // 重置推迟的flush哨兵为0
+    // flush 推迟哨兵，表示上一次写操作被推迟，
+    // 如果上一次写操作被推迟，则记录当前时间，并返回。
+    // 如果上一次写操作被推迟的时间小于2秒，则返回。
+    // 否则，表示上一次写操作被推迟的时间大于2秒，则记录当前时间，并返回。
     server.aof_flush_postponed_start = 0;
 
     if (nwritten != (ssize_t)sdslen(server.aof_buf)) {
@@ -1161,12 +1347,14 @@ void flushAppendOnlyFile(int force) {
         int can_log = 0;
 
         /* Limit logging rate to 1 line per AOF_WRITE_LOG_ERROR_RATE seconds. */
+        // 限制日志记录频率为每AOF_WRITE_LOG_ERROR_RATE秒1行。
         if ((server.unixtime - last_write_error_log) > AOF_WRITE_LOG_ERROR_RATE) {
             can_log = 1;
             last_write_error_log = server.unixtime;
         }
 
         /* Log the AOF write error and record the error code. */
+        // 记录AOF写错误并记录错误代码。
         if (nwritten == -1) {
             if (can_log) {
                 serverLog(LL_WARNING,"Error writing to the AOF file: %s",
@@ -1192,28 +1380,34 @@ void flushAppendOnlyFile(int force) {
             } else {
                 /* If the ftruncate() succeeded we can set nwritten to
                  * -1 since there is no longer partial data into the AOF. */
+                // 如果ftruncate()成功，则将nwritten设置为-1，因为AOF中不再有部分数据。
                 nwritten = -1;
             }
             server.aof_last_write_errno = ENOSPC;
         }
 
         /* Handle the AOF write error. */
+        // 处理AOF写错误。
         if (server.aof_fsync == AOF_FSYNC_ALWAYS) {
             /* We can't recover when the fsync policy is ALWAYS since the reply
              * for the client is already in the output buffers (both writes and
              * reads), and the changes to the db can't be rolled back. Since we
              * have a contract with the user that on acknowledged or observed
              * writes are is synced on disk, we must exit. */
+            // 当AOF fsync策略为ALWAYS时，无法从AOF写错误中恢复，因为回复客户端的写操作已经在输出缓冲区中（写和读），
+            // 并且无法回滚数据库的更改。由于我们与用户有合同，承诺在确认或观察到的写入已同步到磁盘，因此必须退出。
             serverLog(LL_WARNING,"Can't recover from AOF write error when the AOF fsync policy is 'always'. Exiting...");
             exit(1);
         } else {
             /* Recover from failed write leaving data into the buffer. However
              * set an error to stop accepting writes as long as the error
              * condition is not cleared. */
+            // 从失败的写操作中恢复，但设置一个错误以停止接受写操作，直到错误条件被清除。
             server.aof_last_write_status = C_ERR;
 
             /* Trim the sds buffer if there was a partial write, and there
              * was no way to undo it with ftruncate(2). */
+            // 如果nwritten > 0，则表示写操作成功，记录写操作的大小，并更新AOF缓冲区。
             if (nwritten > 0) {
                 server.aof_current_size += nwritten;
                 server.aof_last_incr_size += nwritten;
@@ -1224,6 +1418,7 @@ void flushAppendOnlyFile(int force) {
     } else {
         /* Successful write(2). If AOF was in error state, restore the
          * OK state and log the event. */
+        // 如果server.aof_last_write_status == C_ERR，则表示AOF写错误，记录AOF写错误，并返回。
         if (server.aof_last_write_status == C_ERR) {
             serverLog(LL_NOTICE,
                 "AOF write error looks solved, Redis can write again.");
@@ -1235,6 +1430,7 @@ void flushAppendOnlyFile(int force) {
 
     /* Re-use AOF buffer when it is small enough. The maximum comes from the
      * arena size of 4k minus some overhead (but is otherwise arbitrary). */
+    // 如果AOF缓冲区大小小于4000，则清空AOF缓冲区。
     if ((sdslen(server.aof_buf)+sdsavail(server.aof_buf)) < 4000) {
         sdsclear(server.aof_buf);
     } else {
@@ -1245,17 +1441,21 @@ void flushAppendOnlyFile(int force) {
 try_fsync:
     /* Don't fsync if no-appendfsync-on-rewrite is set to yes and there are
      * children doing I/O in the background. */
+    // 如果server.aof_no_fsync_on_rewrite为1，并且有活动子进程，则返回。
     if (server.aof_no_fsync_on_rewrite && hasActiveChildProcess())
         return;
 
     /* Perform the fsync if needed. */
+    // 如果server.aof_fsync == AOF_FSYNC_ALWAYS，则执行fsync。
     if (server.aof_fsync == AOF_FSYNC_ALWAYS) {
+        // 记录fsync的开始时间
         /* redis_fsync is defined as fdatasync() for Linux in order to avoid
          * flushing metadata. */
         latencyStartMonitor(latency);
         /* Let's try to get this data on the disk. To guarantee data safe when
          * the AOF fsync policy is 'always', we should exit if failed to fsync
          * AOF (see comment next to the exit(1) after write error above). */
+        // 如果redis_fsync(server.aof_fd) == -1，则表示fsync失败，记录fsync失败，并退出。
         if (redis_fsync(server.aof_fd) == -1) {
             serverLog(LL_WARNING,"Can't persist AOF for fsync error when the "
               "AOF fsync policy is 'always': %s. Exiting...", strerror(errno));
@@ -1275,7 +1475,7 @@ try_fsync:
         server.aof_last_fsync = server.mstime;
     }
 }
-
+// 将命令写入AOF文件
 sds catAppendOnlyGenericCommand(sds dst, int argc, robj **argv) {
     char buf[32];
     int len, j;
@@ -1309,6 +1509,8 @@ sds catAppendOnlyGenericCommand(sds dst, int argc, robj **argv) {
  *
  * Timestamp annotation format is "#TS:${timestamp}\r\n". "TS" is short of
  * timestamp and this method could save extra bytes in AOF. */
+// 生成一个时间戳注释，如果当前记录的时间戳在AOF中不等于服务器unix时间，则生成一个时间戳注释。
+// 如果指定force参数为1，则生成一个时间戳注释，当前，它在AOF重写子进程中非常有用，总是需要记录一个时间戳。
 sds genAofTimestampAnnotationIfNeeded(int force) {
     sds ts = NULL;
 
@@ -1328,6 +1530,7 @@ sds genAofTimestampAnnotationIfNeeded(int force) {
  * argv   - The command to write to the aof.
  * argc   - Number of values in argv
  */
+// 将命令写入AOF文件
 void feedAppendOnlyFile(int dictid, robj **argv, int argc) {
     sds buf = sdsempty();
 
@@ -1344,6 +1547,8 @@ void feedAppendOnlyFile(int dictid, robj **argv, int argc) {
 
     /* The DB this command was targeting is not the same as the last command
      * we appended. To issue a SELECT command is needed. */
+     // 如果dictid != -1 && dictid != server.aof_selected_db，则表示当前命令的目标数据库不是上一次命令的目标数据库，
+     // 则需要执行SELECT命令。
     if (dictid != -1 && dictid != server.aof_selected_db) {
         char seldb[64];
 
@@ -1355,11 +1560,13 @@ void feedAppendOnlyFile(int dictid, robj **argv, int argc) {
 
     /* All commands should be propagated the same way in AOF as in replication.
      * No need for AOF-specific translation. */
+     // 将命令写入AOF文件
     buf = catAppendOnlyGenericCommand(buf,argc,argv);
 
     /* Append to the AOF buffer. This will be flushed on disk just before
      * of re-entering the event loop, so before the client will get a
      * positive reply about the operation performed. */
+     // 将命令写入AOF文件
     if (server.aof_state == AOF_ON ||
         (server.aof_state == AOF_WAIT_REWRITE && server.child_type == CHILD_TYPE_AOF))
     {
@@ -1375,6 +1582,7 @@ void feedAppendOnlyFile(int dictid, robj **argv, int argc) {
 
 /* In Redis commands are always executed in the context of a client, so in
  * order to load the append only file we need to create a fake client. */
+// 创建一个AOF客户端
 struct client *createAOFClient(void) {
     struct client *c = createClient(NULL);
 
@@ -1389,10 +1597,12 @@ struct client *createAOFClient(void) {
      * background processing there is a chance that the
      * command execution order will be violated.
      */
+     // 设置AOF客户端的标志为CLIENT_DENY_BLOCKING，表示AOF客户端不应该被阻塞。
     c->flags = CLIENT_DENY_BLOCKING;
 
     /* We set the fake client as a slave waiting for the synchronization
      * so that Redis will not try to send replies to this client. */
+     // 设置AOF客户端的状态为SLAVE_STATE_WAIT_BGSAVE_START，表示AOF客户端正在等待BGSAVE开始。
     c->replstate = SLAVE_STATE_WAIT_BGSAVE_START;
     return c;
 }
@@ -1403,15 +1613,16 @@ struct client *createAOFClient(void) {
  * AOF_NOT_EXIST: AOF file doesn't exist.
  * AOF_EMPTY: The AOF file is empty (nothing to load).
  * AOF_FAILED: Failed to load the AOF file. */
+// 加载单个AOF文件
 int loadSingleAppendOnlyFile(char *filename) {
     struct client *fakeClient;
     struct redis_stat sb;
     int old_aof_state = server.aof_state;
     long loops = 0;
-    off_t valid_up_to = 0; /* Offset of latest well-formed command loaded. */
-    off_t valid_before_multi = 0; /* Offset before MULTI command loaded. */
-    off_t last_progress_report_size = 0;
-    int ret = AOF_OK;
+    off_t valid_up_to = 0; /* Offset of latest well-formed command loaded. */ // 最新合法命令的偏移量
+    off_t valid_before_multi = 0; /* Offset before MULTI command loaded. */ // MULTI命令之前的偏移量
+    off_t last_progress_report_size = 0; // 上一次进度报告的大小
+    int ret = AOF_OK; // 返回值
 
     sds aof_filepath = makePath(server.aof_dirname, filename);
     FILE *fp = fopen(aof_filepath, "r");
@@ -1436,6 +1647,7 @@ int loadSingleAppendOnlyFile(char *filename) {
 
     /* Temporarily disable AOF, to prevent EXEC from feeding a MULTI
      * to the same file we're about to read. */
+     // 暂时禁用AOF，以防止EXEC命令将MULTI命令写入同一个文件。
     server.aof_state = AOF_OFF;
 
     client *old_cur_client = server.current_client;
@@ -1446,11 +1658,14 @@ int loadSingleAppendOnlyFile(char *filename) {
     /* Check if the AOF file is in RDB format (it may be RDB encoded base AOF
      * or old style RDB-preamble AOF). In that case we need to load the RDB file 
      * and later continue loading the AOF tail if it is an old style RDB-preamble AOF. */
+    // 读取AOF文件的前5个字节，如果前5个字节不是"REDIS"，则表示AOF文件不是RDB格式，将文件偏移量设置为0。
     char sig[5]; /* "REDIS" */
     if (fread(sig,1,5,fp) != 5 || memcmp(sig,"REDIS",5) != 0) {
         /* Not in RDB format, seek back at 0 offset. */
         if (fseek(fp,0,SEEK_SET) == -1) goto readerr;
     } else {
+
+        // aof ? RDB ?        
         /* RDB format. Pass loading the RDB functions. */
         rio rdb;
         int old_style = !strcmp(filename, server.aof_filename);
@@ -1477,6 +1692,10 @@ int loadSingleAppendOnlyFile(char *filename) {
     }
 
     /* Read the actual AOF file, in REPL format, command by command. */
+    // 读取AOF文件，命令逐条执行。 aof in REPL format / RDB fromat difference:
+    // 1. aof 文件中，每条命令前都有"*"、"$"、"\r\n"等字符，而RDB文件中没有这些字符。
+    // 2. aof 文件中，每条命令的参数都是以"$"开头，然后是参数的长度，然后是参数的内容，而RDB文件中没有这些字符。
+    // 3. aof 文件中，每条命令的参数都是以"$"开头，然后是参数的长度，然后是参数的内容，而RDB文件中没有这些字符。
     while(1) {
         int argc, j;
         unsigned long len;
@@ -1657,6 +1876,7 @@ cleanup:
 }
 
 /* Load the AOF files according the aofManifest pointed by am. */
+// 根据am指向的aofManifest加载AOF文件。
 int loadAppendOnlyFiles(aofManifest *am) {
     serverAssert(am != NULL);
     int status, ret = AOF_OK;
@@ -1674,6 +1894,15 @@ int loadAppendOnlyFiles(aofManifest *am) {
      *    has only one base AOF record, and the file name of this base AOF is 'server.aof_filename',
      *    and the 'server.aof_filename' file not exist in 'server.aof_dirname' directory
      * */
+
+    /*
+        1. 如果'server.aof_filename'文件存在，则表示服务器是从旧版本的Redis启动的。
+        2. 如果'server.aof_dirname'目录不存在，则表示服务器是从旧版本的Redis启动的。
+        3. 如果'server.aof_dirname'目录存在但manifest文件缺失，则表示服务器是从旧版本的Redis启动的。
+        4. 如果'server.aof_dirname'目录存在且manifest文件存在，但manifest文件中只有一个base AOF记录，
+        且该base AOF记录的文件名与'server.aof_filename'相同，且'server.aof_filename'文件不存在于'server.aof_dirname'目录中，
+        则表示服务器是从旧版本的Redis启动的。
+    */
     if (fileExist(server.aof_filename)) {
         if (!dirExists(server.aof_dirname) ||
             (am->base_aof_info == NULL && listLength(am->incr_aof_list) == 0) ||
@@ -1706,6 +1935,7 @@ int loadAppendOnlyFiles(aofManifest *am) {
     startLoading(total_size, RDBFLAGS_AOF_PREAMBLE, 0);
 
     /* Load BASE AOF if needed. */
+    // 加载BASE AOF文件
     if (am->base_aof_info) {
         serverAssert(am->base_aof_info->file_type == AOF_FILE_TYPE_BASE);
         aof_name = (char*)am->base_aof_info->file_name;
@@ -1720,6 +1950,7 @@ int loadAppendOnlyFiles(aofManifest *am) {
         }
 
         /* If the truncated file is not the last file, we consider this to be a fatal error. */
+        // 如果截断的文件不是最后一个文件，则认为这是一个致命错误。
         if (ret == AOF_TRUNCATED && !last_file) {
             ret = AOF_FAILED;
             serverLog(LL_WARNING, "Fatal error: the truncated file is not the last file");
@@ -1731,6 +1962,7 @@ int loadAppendOnlyFiles(aofManifest *am) {
     }
 
     /* Load INCR AOFs if needed. */
+    // 加载INCR AOF文件
     if (listLength(am->incr_aof_list)) {
         listNode *ln;
         listIter li;
@@ -1751,9 +1983,11 @@ int loadAppendOnlyFiles(aofManifest *am) {
 
             /* We know that (at least) one of the AOF files has data (total_size > 0),
              * so empty incr AOF file doesn't count as a AOF_EMPTY result */
+            // 如果INCR AOF文件为空，则认为这是一个AOF_OK结果。
             if (ret == AOF_EMPTY) ret = AOF_OK;
 
             /* If the truncated file is not the last file, we consider this to be a fatal error. */
+            // 如果截断的文件不是最后一个文件，则认为这是一个致命错误。
             if (ret == AOF_TRUNCATED && !last_file) {
                 ret = AOF_FAILED;
                 serverLog(LL_WARNING, "Fatal error: the truncated file is not the last file");
@@ -1775,6 +2009,12 @@ int loadAppendOnlyFiles(aofManifest *am) {
      * to the size of BASE AOF file. This might cause the first AOFRW to be
      * executed early, but that shouldn't be a problem since everything will be
      * fine after the first AOFRW. */
+    /*
+        aof_rewrite_base_size变量应该持有上一次重写结束时AOF的大小，
+        这个大小应该包括在重写期间创建的增量文件的大小，否则我们可能会过早地进行下一次自动重写（或立即进行，如果auto-aof-rewrite-percentage设置得太低）。
+        然而，由于我们没有在任何地方持久化aof_rewrite_base_size信息，我们在重启时将其初始化为BASE AOF文件的大小，这可能会导致第一次AOFRW执行过早，
+        但这不应该是一个问题，因为第一次AOFRW之后一切都会好起来的。
+    */
     server.aof_rewrite_base_size = base_size;
 
 cleanup:
@@ -1788,6 +2028,11 @@ cleanup:
 
 /* Delegate writing an object to writing a bulk string or bulk long long.
  * This is not placed in rio.c since that adds the server.h dependency. */
+/*
+    将对象写入AOF文件
+    rio.c中没有这个函数，这个函数在aof.c中实现。
+    server.h中没有这个函数，这个函数在aof.c中实现。
+*/
 int rioWriteBulkObject(rio *r, robj *obj) {
     /* Avoid using getDecodedObject to help copy-on-write (we are often
      * in a child process when this function is called). */
@@ -1802,6 +2047,9 @@ int rioWriteBulkObject(rio *r, robj *obj) {
 
 /* Emit the commands needed to rebuild a list object.
  * The function returns 0 on error, 1 on success. */
+/*
+    将列表对象的命令写入AOF文件
+*/
 int rewriteListObject(rio *r, robj *key, robj *o) {
     long long count = 0, items = listTypeLength(o);
 
@@ -1844,6 +2092,10 @@ int rewriteListObject(rio *r, robj *key, robj *o) {
 
 /* Emit the commands needed to rebuild a set object.
  * The function returns 0 on error, 1 on success. */
+/*
+    将集合对象的命令写入AOF文件
+
+*/
 int rewriteSetObject(rio *r, robj *key, robj *o) {
     long long count = 0, items = setTypeSize(o);
     setTypeIterator *si = setTypeInitIterator(o);
@@ -1877,6 +2129,9 @@ int rewriteSetObject(rio *r, robj *key, robj *o) {
 
 /* Emit the commands needed to rebuild a sorted set object.
  * The function returns 0 on error, 1 on success. */
+/*
+    将有序集合对象的命令写入AOF文件
+*/
 int rewriteSortedSetObject(rio *r, robj *key, robj *o) {
     long long count = 0, items = zsetLength(o);
 
@@ -1961,6 +2216,10 @@ int rewriteSortedSetObject(rio *r, robj *key, robj *o) {
  * either OBJ_HASH_KEY or OBJ_HASH_VALUE.
  *
  * The function returns 0 on error, non-zero on success. */
+
+/*
+    将哈希对象的命令写入AOF文件
+*/
 static int rioWriteHashIteratorCursor(rio *r, hashTypeIterator *hi, int what) {
     if ((hi->encoding == OBJ_ENCODING_LISTPACK) || (hi->encoding == OBJ_ENCODING_LISTPACK_EX)) {
         unsigned char *vstr = NULL;
@@ -2439,6 +2698,7 @@ werr:
     stopSaving(0);
     return C_ERR;
 }
+//在后台执行AOF重写,通过创建子进程来完成,避免阻塞主进程
 /* ----------------------------------------------------------------------------
  * AOF background rewrite
  * ------------------------------------------------------------------------- */
@@ -2611,7 +2871,7 @@ int getBaseAndIncrAppendOnlyFilesNum(aofManifest *am) {
     if (am->incr_aof_list) num += listLength(am->incr_aof_list);
     return num;
 }
-
+//处理AOF重写完成后的操作,包括重命名文件、更新清单、删除历史文件等。
 /* A background append only file rewriting (BGREWRITEAOF) terminated its work.
  * Handle this. */
 void backgroundRewriteDoneHandler(int exitcode, int bysignal) {
